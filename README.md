@@ -36,7 +36,7 @@ YouTube URL → yt-dlp 下载视频
 ### 安装
 
 ```bash
-git clone <repo-url> && cd yt-subtranslate
+git clone https://github.com/ezhpry/yt-subtranslate.git && cd yt-subtranslate
 uv sync
 ```
 
