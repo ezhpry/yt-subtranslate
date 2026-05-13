@@ -1,3 +1,4 @@
+import sys
 import time
 from collections.abc import Callable
 from typing import TypeVar
@@ -21,5 +22,6 @@ def retry_with_backoff(
             if attempt == max_retries:
                 break
             delay = base_delay * (backoff_factor ** attempt)
+            print(f"  Retry {attempt + 1}/{max_retries} in {delay:.0f}s: {e}", file=sys.stderr)
             time.sleep(delay)
     raise last_exc  # type: ignore[misc]

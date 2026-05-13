@@ -71,6 +71,8 @@ class Pipeline:
         if en_srt_path.exists():
             log_info("SUBTITLE", f"en.srt exists, skipping: {en_srt_path}")
             subtitle = Subtitle.from_srt(en_srt_path, language="en")
+            subtitle.normalize_timing()
+            subtitle.to_srt(en_srt_path)
         else:
             log_info("SUBTITLE", "Checking for captions...")
             try:
@@ -91,6 +93,7 @@ class Pipeline:
                     subtitle = None
 
             if subtitle is not None:
+                subtitle.normalize_timing()
                 subtitle.to_srt(en_srt_path)
                 log_info("SUBTITLE", f"saved: {en_srt_path}")
             else:
@@ -140,6 +143,7 @@ class Pipeline:
                         translated_entries.extend(chunk)
 
                 zh_subtitle = Subtitle(entries=translated_entries, language="zh")
+                zh_subtitle.normalize_timing()
                 zh_subtitle.to_srt(zh_srt_path)
                 log_info("TRANSLATE", f"saved: {zh_srt_path}")
 

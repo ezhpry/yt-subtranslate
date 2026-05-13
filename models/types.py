@@ -108,6 +108,15 @@ class Subtitle:
                 f.write(f"{ms_to_srt_timestamp(entry.start_ms)} --> {ms_to_srt_timestamp(entry.end_ms)}\n")
                 f.write(f"{entry.text}\n\n")
 
+    def normalize_timing(self, min_gap_ms: int = 1) -> None:
+        """Ensure entries do not overlap. Trims end_ms of overlapping entries."""
+        for i in range(len(self.entries) - 1):
+            current = self.entries[i]
+            nxt = self.entries[i + 1]
+            limit = nxt.start_ms - min_gap_ms
+            if current.end_ms > limit:
+                current.end_ms = limit
+
 
 @dataclass
 class SubtitleStyle:
