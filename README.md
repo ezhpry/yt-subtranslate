@@ -16,13 +16,17 @@ YouTube 视频下载 + 字幕翻译工具。自动下载视频、提取/识别�
 ```
 YouTube URL → yt-dlp 下载视频
                 ↓
-         有英文字幕? ──是→ 下载 .srt
+         有英文字幕? ──是→ 手动字幕 > 自动字幕
                 │
-                否 → 提取音频 → Whisper 语音识别 → 生成英文字幕
-                                              ↓
-                                   AI 翻译 (DeepSeek) → 中文字幕
-                                                              ↓
-                                               FFmpeg 合成 → 字幕视频
+                否 → 提取音频 → Whisper 语音识别
+                                        ↓
+                           [可选] AI 英文字幕纠错
+                                        ↓
+                           [可选] YouTube 原生中文字幕
+                                        ↓
+                              AI 翻译 (DeepSeek) → 中文字幕
+                                                        ↓
+                                         FFmpeg 合成 → 字幕视频
 ```
 
 ## 快速开始
@@ -57,11 +61,19 @@ uv run python main.py https://www.youtube.com/watch?v=xxxxx
 # 纯中文字幕
 uv run python main.py https://www.youtube.com/watch?v=xxxxx --subtitle-mode chinese
 
-# 指定分辨率
-uv run python main.py https://www.youtube.com/watch?v=xxxxx --resolution 720p
+# 使用 YouTube 原生中文字幕（跳过 AI 翻译）
+uv run python main.py https://www.youtube.com/watch?v=xxxxx --native-zh
 
-# 指定 Whisper 模型（语音识别回退时）
+# AI 纠错英文字幕（修复自动字幕中的识别错误）
+uv run python main.py https://www.youtube.com/watch?v=xxxxx --correct-en
+
+# 禁用翻译缓存（强制重新翻译）
+uv run python main.py https://www.youtube.com/watch?v=xxxxx --no-cache
+
+# 指定分辨率 / Whisper 模型 / 翻译批次大小
+uv run python main.py https://www.youtube.com/watch?v=xxxxx --resolution 720p
 uv run python main.py https://www.youtube.com/watch?v=xxxxx --whisper-model medium
+uv run python main.py https://www.youtube.com/watch?v=xxxxx --chunk-size 20
 
 # 查看所有选项
 uv run python main.py --help
