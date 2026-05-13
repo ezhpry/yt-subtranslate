@@ -13,6 +13,103 @@ class VideoInfo:
 
 
 @dataclass
+class SubtitleEntry:
+    index: int
+    start_ms: int
+    end_ms: int
+    text: str
+
+
+@dataclass
+class Subtitle:
+    entries: list[SubtitleEntry]
+    language: str  # ISO 639-1, e.g. "en", "zh"
+
+    @classmethod
+    def from_srt(cls, path: Path, language: str) -> "Subtitle":
+        from utils.time_utils import srt_timestamp_to_ms
+
+        entries = []
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read().strip()
+
+        blocks = content.split("\n\n")
+        for block in blocks:
+            lines = block.strip().split("\n")
+            if len(lines) < 3:
+                continue
+            index = int(lines[0])
+            start_str, end_str = lines[1].split(" --> ")
+            text = "\n".join(lines[2:])
+
+            entries.append(SubtitleEntry(
+                index=index,
+                start_ms=srt_timestamp_to_ms(start_str.strip()),
+                end_ms=srt_timestamp_to_ms(end_str.strip()),
+                text=text,
+            ))
+
+        return cls(entries=entries, language=language)
+
+    @classmethod
+    def from_vtt(cls, path: Path, language: str) -> "Subtitle":
+        from utils.time_utils import srt_timestamp_to_ms
+
+        entries = []
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        blocks = content.strip().split("\n\n")
+        idx = 0
+        for block in blocks:
+            if block.startswith("WEBVTT") or not block.strip():
+                continue
+            lines = block.strip().split("\n")
+            if len(lines) < 2:
+                continue
+            timestamp_line = lines[0]
+            if " --> " not in timestamp_line:
+                if len(lines) > 1 and " --> " in lines[1]:
+                    lines = lines[1:]
+                    timestamp_line = lines[0]
+                else:
+                    continue
+            start_str, end_str = timestamp_line.split(" --> ")
+            text = "\n".join(lines[1:])
+            idx += 1
+
+            entries.append(SubtitleEntry(
+                index=idx,
+                start_ms=srt_timestamp_to_ms(start_str.strip().replace(".", ",")),
+                end_ms=srt_timestamp_to_ms(end_str.strip().replace(".", ",")),
+                text=text,
+            ))
+
+        return cls(entries=entries, language=language)
+
+    @classmethod
+    def from_whisper_segments(cls, segments: list[dict], language: str) -> "Subtitle":
+        entries = []
+        for i, seg in enumerate(segments, 1):
+            entries.append(SubtitleEntry(
+                index=i,
+                start_ms=int(seg["start"] * 1000),
+                end_ms=int(seg["end"] * 1000),
+                text=seg["text"].strip(),
+            ))
+        return cls(entries=entries, language=language)
+
+    def to_srt(self, path: Path) -> None:
+        from utils.time_utils import ms_to_srt_timestamp
+
+        with open(path, "w", encoding="utf-8") as f:
+            for entry in self.entries:
+                f.write(f"{entry.index}\n")
+                f.write(f"{ms_to_srt_timestamp(entry.start_ms)} --> {ms_to_srt_timestamp(entry.end_ms)}\n")
+                f.write(f"{entry.text}\n\n")
+
+
+@dataclass
 class SubtitleStyle:
     font_size: int = 24
     font_color: str = "white"
