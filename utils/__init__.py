@@ -6,6 +6,7 @@ from utils.cache import (
     save_translation_cache,
     cache_key,
 )
+from utils.logger import log_info, log_warn, log_error
 
 __all__ = [
     "sanitize_filename",
@@ -16,4 +17,7 @@ __all__ = [
     "load_translation_cache",
     "save_translation_cache",
     "cache_key",
+    "log_info",
+    "log_warn",
+    "log_error",
 ]

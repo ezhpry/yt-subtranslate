@@ -114,3 +114,12 @@ class SubtitleStyle:
     font_size: int = 24
     font_color: str = "white"
     outline_color: str = "black"
+
+
+@dataclass
+class PipelineResult:
+    success: bool
+    video_path: Path
+    burned_video: Path | None
+    subtitle_path: Path | None
+    warnings: list[str]
