@@ -6,6 +6,8 @@ tests/
 docs/
 .cache/
 output/
+demo/.cache
+demo/output
 
 # IDE & tools
 .idea/
