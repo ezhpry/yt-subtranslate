@@ -117,6 +117,18 @@ class Subtitle:
             if current.end_ms > limit:
                 current.end_ms = limit
 
+    def merge_bilingual(self, other: "Subtitle") -> "Subtitle":
+        """Merge with another subtitle of same entry count. Pairs text as 'en\ntranslated'."""
+        merged = []
+        for a, b in zip(self.entries, other.entries):
+            merged.append(SubtitleEntry(
+                index=a.index,
+                start_ms=a.start_ms,
+                end_ms=a.end_ms,
+                text=f"{b.text}\n{a.text}",
+            ))
+        return Subtitle(entries=merged, language="bilingual")
+
 
 @dataclass
 class SubtitleStyle:

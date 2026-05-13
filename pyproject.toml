@@ -1,7 +1,7 @@
 [project]
-name = "web-downloader"
+name = "yt-subtranslate"
 version = "0.1.0"
-description = "Add your description here"
+description = "YouTube video downloader with AI subtitle translation"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

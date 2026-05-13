@@ -19,6 +19,11 @@ def main():
     parser.add_argument("--font-size", type=int, default=24)
     parser.add_argument("--font-color", default="white")
     parser.add_argument("--outline-color", default="black")
+    parser.add_argument(
+        "--subtitle-mode", default="bilingual",
+        choices=["chinese", "bilingual"],
+        help="Subtitle display mode (default: bilingual)",
+    )
 
     args = parser.parse_args()
 
@@ -30,6 +35,7 @@ def main():
     result = pipeline.run(
         url=args.url,
         resolution=args.resolution,
+        subtitle_mode=args.subtitle_mode,
     )
 
     if result.success:

@@ -26,6 +26,7 @@ class Pipeline:
         url: str,
         workdir: Path | None = None,
         resolution: str = "1080p",
+        subtitle_mode: str = "bilingual",
     ) -> PipelineResult:
         warnings: list[str] = []
 
@@ -150,18 +151,32 @@ class Pipeline:
         # Stage 4: Compose (skip if outputs exist)
         burned_path = workdir / "output_burned.mp4"
         soft_path = workdir / "output_zh.srt"
-        if zh_subtitle is not None:
+
+        # Determine which subtitle to burn
+        if zh_subtitle is not None and subtitle_mode == "bilingual":
+            burn_sub = subtitle.merge_bilingual(zh_subtitle)
+            burn_sub.normalize_timing()
+            log_info("COMPOSE", "Bilingual subtitle mode: en + zh")
+        elif zh_subtitle is not None:
+            burn_sub = zh_subtitle
+        else:
+            burn_sub = None
+
+        if burn_sub is not None:
             if not burned_path.exists():
                 log_info("COMPOSE", "Burning subtitles...")
                 self.compositor.burn_subtitles(
-                    video.path, zh_subtitle, burned_path, style=self.settings.subtitle_style
+                    video.path, burn_sub, burned_path, style=self.settings.subtitle_style
                 )
                 log_info("COMPOSE", f"burned: {burned_path}")
             else:
                 log_info("COMPOSE", f"burned video exists, skipping: {burned_path}")
 
-            if not soft_path.exists():
+            if burn_sub is zh_subtitle and not soft_path.exists():
                 self.compositor.write_soft_subtitle(zh_subtitle, soft_path)
+                log_info("COMPOSE", f"soft srt: {soft_path}")
+            elif burn_sub is not zh_subtitle and not soft_path.exists():
+                self.compositor.write_soft_subtitle(burn_sub, soft_path)
                 log_info("COMPOSE", f"soft srt: {soft_path}")
             else:
                 log_info("COMPOSE", f"soft srt exists, skipping: {soft_path}")

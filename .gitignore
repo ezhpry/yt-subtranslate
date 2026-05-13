@@ -1,2 +1,14 @@
 __pycache__/
 *.pyc
+
+# Local data (not tracked)
+tests/
+docs/
+.cache/
+output/
+
+# IDE & tools
+.idea/
+.claude/
+.pytest_cache/
+.vscode/
