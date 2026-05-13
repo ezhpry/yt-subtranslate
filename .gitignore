@@ -1,13 +1,19 @@
-__pycache__/
+**/__pycache__/
 *.pyc
+
+# uv
+.python-version
+
+# virtual environment
+.venv
 
 # Local data (not tracked)
 tests/
 docs/
 .cache/
 output/
-demo/.cache
-demo/output
+demo/.cache/
+demo/output/
 
 # IDE & tools
 .idea/
