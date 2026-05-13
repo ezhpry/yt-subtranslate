@@ -25,6 +25,7 @@ class OpenAITranslator(BaseTranslator):
         base_url: str = "https://api.deepseek.com",
         model: str = "deepseek-v4-flash",
         timeout: int = 120,
+        debug: bool = False,
     ):
         self.client = OpenAI(
             api_key=api_key,
@@ -32,6 +33,7 @@ class OpenAITranslator(BaseTranslator):
             timeout=timeout,
         )
         self.model = model
+        self.debug = debug
 
     # ---- translate ----
 
@@ -196,22 +198,24 @@ class OpenAITranslator(BaseTranslator):
         t_in = usage.prompt_tokens if usage else "?"
         t_out = usage.completion_tokens if usage else "?"
 
-        print(f"  [API] temp={temp} finish={finish} "
-              f"tokens(in={t_in}, out={t_out}) len={len(content)}", file=sys.stderr)
+        if self.debug:
+            print(f"  [DEBUG] temp={temp} finish={finish} "
+                  f"tokens(in={t_in}, out={t_out}) len={len(content)}", file=sys.stderr)
 
         if not content:
             raise RuntimeError("Empty response from API")
         if finish == "length":
             raise RuntimeError(f"Response truncated (finish=length)")
 
-        if len(content) <= 600:
-            print(f"  [API] body: {content}", file=sys.stderr)
+        if self.debug and len(content) <= 600:
+            print(f"  [DEBUG] body: {content}", file=sys.stderr)
 
         try:
             result = json.loads(content)
         except json.JSONDecodeError as e:
-            snippet = content[max(0, e.pos - 40):e.pos + 40]
-            print(f"  [API] JSON error at pos {e.pos}: ...{snippet}...", file=sys.stderr)
+            if self.debug:
+                snippet = content[max(0, e.pos - 40):e.pos + 40]
+                print(f"  [DEBUG] JSON error at pos {e.pos}: ...{snippet}...", file=sys.stderr)
             raise RuntimeError(f"Invalid JSON at pos {e.pos}")
 
         if not isinstance(result, dict):
@@ -222,9 +226,9 @@ class OpenAITranslator(BaseTranslator):
         # Also check for truly empty values that aren't strings
         truly_empty = [k for k, v in result.items() if not v or (isinstance(v, str) and not v.strip())]
 
-        if missing or truly_empty:
+        if self.debug and (missing or truly_empty):
             keys = [str(i) for i in range(n) if str(i) in result]
-            print(f"  [API] keys={len(result)}/{n}"
+            print(f"  [DEBUG] keys={len(result)}/{n}"
                   f"{' missing=' + str(missing[:10]) if missing else ''}"
                   f"{' empty=' + str(truly_empty[:10]) if truly_empty else ''}",
                   file=sys.stderr)

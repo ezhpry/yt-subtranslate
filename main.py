@@ -36,6 +36,10 @@ def main():
         "--no-cache", action="store_true",
         help="Disable translation cache (force re-translate)",
     )
+    parser.add_argument(
+        "--debug", action="store_true",
+        help="Enable verbose API diagnostic logging",
+    )
 
     args = parser.parse_args()
 
@@ -53,6 +57,7 @@ def main():
         native_zh=args.native_zh,
         correct_en=args.correct_en,
         no_cache=args.no_cache,
+        debug=args.debug,
     )
 
     if result.success:

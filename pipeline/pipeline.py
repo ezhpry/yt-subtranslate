@@ -30,6 +30,7 @@ class Pipeline:
         native_zh: bool = False,
         correct_en: bool = False,
         no_cache: bool = False,
+        debug: bool = False,
     ) -> PipelineResult:
         warnings: list[str] = []
 
@@ -119,7 +120,7 @@ class Pipeline:
             if not api_key:
                 log_warn("CORRECT", "No API key — skipping EN correction")
             else:
-                corrector = OpenAITranslator(api_key=api_key, base_url=base_url, timeout=self.settings.api_timeout)
+                corrector = OpenAITranslator(api_key=api_key, base_url=base_url, timeout=self.settings.api_timeout, debug=debug)
                 chunk_size = self.settings.chunk_size
                 corrected_entries: list = []
                 total_chunks = (len(subtitle.entries) + chunk_size - 1) // chunk_size
@@ -176,6 +177,7 @@ class Pipeline:
                     api_key=api_key,
                     base_url=base_url,
                     timeout=self.settings.api_timeout,
+                    debug=debug,
                 )
                 chunk_size = self.settings.chunk_size
                 translated_entries: list = []
