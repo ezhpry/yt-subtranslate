@@ -1,9 +1,9 @@
-"""Demo: Translate English subtitles to Chinese using DeepSeek."""
+"""Demo: Translate English subtitles to Chinese via OpenAI-compatible API."""
 import os
 from pathlib import Path
 
 from models.types import Subtitle
-from translator.deepseek_translator import DeepSeekTranslator
+from translator.openai_translator import OpenAITranslator
 
 
 def main():
@@ -21,12 +21,12 @@ def main():
     print(f"Loaded {len(subtitle.entries)} entries from {srt_path}")
 
     api_key = os.environ.get("DEEPSEEK_API_KEY", "")
-    base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
+    base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
     if not api_key:
         print("Set DEEPSEEK_API_KEY environment variable")
         return
 
-    translator = DeepSeekTranslator(api_key=api_key, base_url=base_url, model="deepseek-v4-pro")
+    translator = OpenAITranslator(api_key=api_key, base_url=base_url)
 
     chunk_size = 50
     translated_entries = []
