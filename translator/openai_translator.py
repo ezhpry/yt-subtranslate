@@ -1,16 +1,21 @@
-import re
+import json
 import sys
+import time
 
 from openai import OpenAI
 
 from models.types import SubtitleEntry
 from translator.base import BaseTranslator
-from utils.retry import retry_with_backoff
 from utils.cache import (
     load_translation_cache,
     save_translation_cache,
     cache_key,
 )
+
+TEMPERATURE = 0.2
+# Progressively higher temps to break deterministic empty/missing outputs
+RETRY_TEMPS = [0.2, 0.3, 0.5, 0.7, 0.9]
+MAX_RETRIES = len(RETRY_TEMPS) - 1
 
 
 class OpenAITranslator(BaseTranslator):
@@ -31,42 +36,42 @@ class OpenAITranslator(BaseTranslator):
     # ---- translate ----
 
     def translate(
-        self, entries: list[SubtitleEntry], source: str, target: str
+        self, entries: list[SubtitleEntry], source: str, target: str,
+        use_cache: bool = True,
     ) -> list[SubtitleEntry]:
         if not entries:
             return []
 
-        cache = load_translation_cache()
-        texts_to_translate: list[str] = []
+        texts: list[str] = []
         cache_hits: dict[str, str] = {}
 
-        for e in entries:
-            key = cache_key(source, target, self.model, e.text)
-            if key in cache:
-                cache_hits[key] = cache[key]
-            else:
-                texts_to_translate.append(e.text)
+        if use_cache:
+            cache = load_translation_cache()
+            for e in entries:
+                key = cache_key(source, target, self.model, e.text)
+                if key in cache:
+                    cache_hits[key] = cache[key]
+                else:
+                    texts.append(e.text)
+        else:
+            cache = {}
+            texts = [e.text for e in entries]
 
         new_translations: dict[str, str] = {}
-        if texts_to_translate:
-            translated = self._batch(texts_to_translate, self._prompt_translate(source, target))
-            for original, translated_text in zip(texts_to_translate, translated):
-                key = cache_key(source, target, self.model, original)
-                cache[key] = translated_text
-                new_translations[key] = translated_text
-            save_translation_cache(cache)
+        if texts:
+            translated = self._batch(texts, source, target, mode="translate")
+            for orig, t in zip(texts, translated):
+                key = cache_key(source, target, self.model, orig)
+                cache[key] = t
+                new_translations[key] = t
+            if use_cache:
+                save_translation_cache(cache)
 
-        all_translations = {**cache_hits, **new_translations}
-        result = []
-        for e in entries:
-            key = cache_key(source, target, self.model, e.text)
-            result.append(SubtitleEntry(
-                index=e.index,
-                start_ms=e.start_ms,
-                end_ms=e.end_ms,
-                text=all_translations[key],
-            ))
-        return result
+        return [
+            SubtitleEntry(index=e.index, start_ms=e.start_ms, end_ms=e.end_ms,
+                          text=cache[cache_key(source, target, self.model, e.text)])
+            for e in entries
+        ]
 
     # ---- correct ----
 
@@ -77,129 +82,199 @@ class OpenAITranslator(BaseTranslator):
             return []
 
         texts = [e.text for e in entries]
-        corrected_texts = self._batch(texts, self._prompt_correct(language))
+        corrected = self._batch(texts, language, language, mode="correct")
+        return [
+            SubtitleEntry(index=e.index, start_ms=e.start_ms, end_ms=e.end_ms, text=t)
+            for e, t in zip(entries, corrected)
+        ]
 
-        result = []
-        for e, corrected_text in zip(entries, corrected_texts):
-            result.append(SubtitleEntry(
-                index=e.index,
-                start_ms=e.start_ms,
-                end_ms=e.end_ms,
-                text=corrected_text,
-            ))
-        return result
+    # ---- core engine ----
 
-    # ---- batch engine (numbered format + single-item fallback) ----
-
-    def _batch(self, texts: list[str], prompt: tuple[str, str]) -> list[str]:
-        """Batch translate/correct using numbered format. Falls back to single-item."""
+    def _batch(
+        self, texts: list[str], source: str, target: str, mode: str
+    ) -> list[str]:
         n = len(texts)
         if n == 1:
-            return [self._single_item(texts[0], prompt)]
+            return [self._single(texts[0], source, target, mode)]
 
-        system_prompt, task_hint = prompt
         try:
-            return self._call_numbered(texts, system_prompt, task_hint)
+            return self._call_json_api(texts, source, target, mode)
         except Exception as e:
             print(f"  Batch failed: {e}", file=sys.stderr)
             print(f"  Falling back to single-item ({n} calls)...", file=sys.stderr)
-            return [self._single_item(t, prompt) for t in texts]
+            return [self._single(t, source, target, mode) for t in texts]
 
-    def _single_item(self, text: str, prompt: tuple[str, str]) -> str:
-        """Translate or correct a single item — most reliable."""
-        system_prompt, _task_hint = prompt
-
-        def do_request():
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": text},
-                ],
-                temperature=0.3,
-                extra_body={"thinking": {"type": "disabled"}},
-            )
-            result = (response.choices[0].message.content or "").strip()
-            if not result:
-                raise RuntimeError("Empty response")
-            return result
-
-        return retry_with_backoff(do_request, max_retries=2)
-
-    def _call_numbered(
-        self, texts: list[str], system_prompt: str, task_hint: str
+    def _call_json_api(
+        self, texts: list[str], source: str, target: str, mode: str
     ) -> list[str]:
-        """Use numbered format: [1] text → [1] result. Model handles this naturally."""
         n = len(texts)
-        numbered_input = "\n".join(f"[{i + 1}] {t}" for i, t in enumerate(texts))
+        input_obj = {str(i): t for i, t in enumerate(texts)}
+        input_json = json.dumps(input_obj, ensure_ascii=False)
+
+        if mode == "translate":
+            system_prompt = (
+                f"You are a professional subtitle translator. "
+                f"Translate each English subtitle line into natural Chinese.\n\n"
+                f"IMPORTANT: Subtitles are often fragments split across multiple lines. "
+                f"A line starting with lowercase or ending abruptly is a continuation — "
+                f"use context from surrounding lines to produce a complete translation.\n\n"
+                f"CRITICAL: Every input MUST have a non-empty output. "
+                f"If you cannot translate a fragment, output the original English text "
+                f"rather than an empty string. Empty outputs are UNACCEPTABLE.\n\n"
+                f"Input is a JSON object. Output a JSON object with the SAME keys.\n\n"
+                f"EXAMPLE INPUT:\n"
+                f'{{"0": "within large enterprises. These are", '
+                f'"1": "company and team specific skills built", '
+                f'"2": "for an organization."}}\n\n'
+                f"EXAMPLE JSON OUTPUT:\n"
+                f'{{"0": "大型企业内部。这些是", '
+                f'"1": "为组织和团队构建的特定技能", '
+                f'"2": "为企业打造的。"}}\n\n'
+                f"RULES:\n"
+                f"1. Output ALL {n} keys (0 through {n - 1}). Never skip any key.\n"
+                f"2. Every value MUST be non-empty. No \"\" values allowed.\n"
+                f"3. For difficult fragments, translate literally — do not leave blank.\n"
+                f"4. Keep translations concise — subtitle style.\n"
+                f"5. Output ONLY the JSON object, no markdown, no explanation."
+            )
+        else:
+            system_prompt = (
+                "You are a subtitle corrector. Fix transcription errors in each value.\n"
+                "Input is a JSON object. Output a JSON object with the SAME keys.\n\n"
+                "EXAMPLE INPUT:\n"
+                '{"0": "I use cloud code", "1": "its over their"}\n\n'
+                "EXAMPLE JSON OUTPUT:\n"
+                '{"0": "I use Claude Code", "1": "it\'s over there"}\n\n'
+                "RULES:\n"
+                f"1. Output ALL {n} keys (0 through {n - 1}).\n"
+                f"2. Fix only clear errors (proper nouns, homophones, punctuation).\n"
+                f"3. Every value MUST be non-empty. If correct, return unchanged.\n"
+                f"4. Output ONLY valid JSON, no markdown."
+            )
 
         user_prompt = (
-            f"{numbered_input}\n\n"
-            f"{task_hint}\n"
-            f"There are exactly {n} items above. Output exactly {n} lines "
-            f"with numbers [1] through [{n}]."
+            f"{input_json}\n\n"
+            f"ALL {n} keys required. No empty strings. No missing keys."
         )
 
-        def do_request():
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=0.3,
-                extra_body={"thinking": {"type": "disabled"}},
+        last_error = None
+        for attempt, temp in enumerate(RETRY_TEMPS):
+            try:
+                result = self._try_request(
+                    system_prompt, user_prompt, n, temp,
+                    attempt=attempt, total=len(RETRY_TEMPS)
+                )
+                return result
+            except Exception as e:
+                last_error = e
+                if attempt < MAX_RETRIES:
+                    delay = 2 ** attempt
+                    print(f"  Retry {attempt + 1}/{MAX_RETRIES} in {delay}s "
+                          f"(temp={RETRY_TEMPS[attempt + 1]}): {e}", file=sys.stderr)
+                    time.sleep(delay)
+
+        raise last_error  # type: ignore[misc]
+
+    def _try_request(
+        self, system_prompt: str, user_prompt: str, n: int, temp: float,
+        attempt: int = 0, total: int = 1
+    ) -> list[str]:
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=temp,
+            max_tokens=8192,
+            response_format={"type": "json_object"},
+            extra_body={"thinking": {"type": "disabled"}},
+        )
+        content = response.choices[0].message.content or ""
+        finish = response.choices[0].finish_reason
+        usage = response.usage
+        t_in = usage.prompt_tokens if usage else "?"
+        t_out = usage.completion_tokens if usage else "?"
+
+        print(f"  [API] temp={temp} finish={finish} "
+              f"tokens(in={t_in}, out={t_out}) len={len(content)}", file=sys.stderr)
+
+        if not content:
+            raise RuntimeError("Empty response from API")
+        if finish == "length":
+            raise RuntimeError(f"Response truncated (finish=length)")
+
+        if len(content) <= 600:
+            print(f"  [API] body: {content}", file=sys.stderr)
+
+        try:
+            result = json.loads(content)
+        except json.JSONDecodeError as e:
+            snippet = content[max(0, e.pos - 40):e.pos + 40]
+            print(f"  [API] JSON error at pos {e.pos}: ...{snippet}...", file=sys.stderr)
+            raise RuntimeError(f"Invalid JSON at pos {e.pos}")
+
+        if not isinstance(result, dict):
+            raise RuntimeError(f"Expected object, got {type(result).__name__}")
+
+        missing = [i for i in range(n) if str(i) not in result]
+        empty_keys = [k for k, v in result.items() if v and isinstance(v, str) and not v.strip()]
+        # Also check for truly empty values that aren't strings
+        truly_empty = [k for k, v in result.items() if not v or (isinstance(v, str) and not v.strip())]
+
+        if missing or truly_empty:
+            keys = [str(i) for i in range(n) if str(i) in result]
+            print(f"  [API] keys={len(result)}/{n}"
+                  f"{' missing=' + str(missing[:10]) if missing else ''}"
+                  f"{' empty=' + str(truly_empty[:10]) if truly_empty else ''}",
+                  file=sys.stderr)
+
+        if missing:
+            raise RuntimeError(f"Missing keys: {missing[:10]}")
+        if truly_empty:
+            raise RuntimeError(f"Empty values: {truly_empty[:10]}")
+
+        return [str(result[str(i)]) for i in range(n)]
+
+    def _single(
+        self, text: str, source: str, target: str, mode: str
+    ) -> str:
+        """Single-item with same progressive-temperature retry."""
+        if mode == "correct":
+            sys_msg = (
+                "Fix transcription errors in this subtitle line. "
+                "Fix only clear errors (proper nouns, homophones). "
+                "Output ONLY the corrected text, no explanation."
             )
-            raw = response.choices[0].message.content or ""
-            finish = response.choices[0].finish_reason
-            if finish == "length":
-                raise RuntimeError("Response truncated by token limit")
+        else:
+            sys_msg = (
+                f"Translate this line from {source} to {target}. "
+                "This may be a sentence fragment. Translate it literally — "
+                "never output empty. If unsure, output the closest possible translation. "
+                "Output ONLY the translation, no extra text."
+            )
 
-            # Parse numbered output
-            parsed = {}
-            for line in raw.strip().split("\n"):
-                line = line.strip()
-                if not line:
-                    continue
-                m = re.match(r"^\[(\d+)\]\s*(.+)$", line)
-                if m:
-                    parsed[int(m.group(1))] = m.group(2).strip()
+        last_error = None
+        for attempt, temp in enumerate(RETRY_TEMPS):
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": sys_msg},
+                        {"role": "user", "content": text},
+                    ],
+                    temperature=temp,
+                    extra_body={"thinking": {"type": "disabled"}},
+                )
+                result = (response.choices[0].message.content or "").strip()
+                if not result:
+                    raise RuntimeError("Empty response")
+                return result
+            except Exception as e:
+                last_error = e
+                if attempt < MAX_RETRIES:
+                    time.sleep(2 ** attempt)
 
-            # Validate
-            missing = [i for i in range(1, n + 1) if i not in parsed]
-            if missing:
-                raise RuntimeError(f"Missing: {missing}. Got {len(parsed)}/{n}")
-
-            return [parsed[i] for i in range(1, n + 1)]
-
-        return retry_with_backoff(do_request, max_retries=2)
-
-    # ---- prompts ----
-
-    def _prompt_translate(self, source: str, target: str) -> tuple[str, str]:
-        system = (
-            f"You are a professional subtitle translator. "
-            f"Translate each line from {source} to {target}. "
-            f"Keep translations concise and natural — subtitle style."
-        )
-        task = (
-            f"Translate the {source} lines above to {target}. "
-            f"Keep the same format: [1] translation, [2] translation, ..."
-        )
-        return (system, task)
-
-    def _prompt_correct(self, language: str) -> tuple[str, str]:
-        system = (
-            "You are a subtitle transcription corrector. "
-            "Auto-generated subtitles often have errors: "
-            "misrecognized proper nouns (e.g., 'cloud code' → 'Claude Code'), "
-            "homophones (their/there), missing punctuation. "
-            "Fix only clear errors using context. "
-            "If the text is correct, return it unchanged. "
-            "Keep the same length — this is subtitle text."
-        )
-        task = (
-            "Review and correct each line above for transcription errors. "
-            "Keep the same format: [1] corrected, [2] corrected, ..."
-        )
-        return (system, task)
+        # Absolute last resort: return original text rather than empty
+        print(f"  Single-item exhausted retries, returning original: {text[:50]}", file=sys.stderr)
+        return text

@@ -29,6 +29,7 @@ class Pipeline:
         subtitle_mode: str = "bilingual",
         native_zh: bool = False,
         correct_en: bool = False,
+        no_cache: bool = False,
     ) -> PipelineResult:
         warnings: list[str] = []
 
@@ -185,7 +186,7 @@ class Pipeline:
                     chunk_num = i // chunk_size + 1
                     log_info("TRANSLATE", f"chunk {chunk_num}/{total_chunks} ({len(chunk)} entries)")
                     try:
-                        translated = translator.translate(chunk, source="en", target="zh")
+                        translated = translator.translate(chunk, source="en", target="zh", use_cache=not no_cache)
                         translated_entries.extend(translated)
                     except Exception as e:
                         log_error("TRANSLATE", f"chunk {chunk_num} failed: {e}")

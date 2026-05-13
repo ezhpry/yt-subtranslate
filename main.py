@@ -15,7 +15,7 @@ def main():
         "--whisper-model", default="small",
         choices=["tiny", "base", "small", "medium"],
     )
-    parser.add_argument("--chunk-size", type=int, default=50)
+    parser.add_argument("--chunk-size", type=int, default=None, help="Translation batch size (default: 15)")
     parser.add_argument("--font-size", type=int, default=24)
     parser.add_argument("--font-color", default="white")
     parser.add_argument("--outline-color", default="black")
@@ -32,6 +32,10 @@ def main():
         "--correct-en", action="store_true",
         help="AI-correction of English subtitles before translation (fixes transcription errors)",
     )
+    parser.add_argument(
+        "--no-cache", action="store_true",
+        help="Disable translation cache (force re-translate)",
+    )
 
     args = parser.parse_args()
 
@@ -40,12 +44,15 @@ def main():
         sys.exit(1)
 
     pipeline = Pipeline()
+    if args.chunk_size is not None:
+        pipeline.settings.chunk_size = args.chunk_size
     result = pipeline.run(
         url=args.url,
         resolution=args.resolution,
         subtitle_mode=args.subtitle_mode,
         native_zh=args.native_zh,
         correct_en=args.correct_en,
+        no_cache=args.no_cache,
     )
 
     if result.success:
