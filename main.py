@@ -24,6 +24,14 @@ def main():
         choices=["chinese", "bilingual"],
         help="Subtitle display mode (default: bilingual)",
     )
+    parser.add_argument(
+        "--native-zh", action="store_true",
+        help="Use YouTube's built-in Chinese subtitles (lower quality, skips AI translation)",
+    )
+    parser.add_argument(
+        "--correct-en", action="store_true",
+        help="AI-correction of English subtitles before translation (fixes transcription errors)",
+    )
 
     args = parser.parse_args()
 
@@ -36,6 +44,8 @@ def main():
         url=args.url,
         resolution=args.resolution,
         subtitle_mode=args.subtitle_mode,
+        native_zh=args.native_zh,
+        correct_en=args.correct_en,
     )
 
     if result.success:

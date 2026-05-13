@@ -27,6 +27,8 @@ class Pipeline:
         workdir: Path | None = None,
         resolution: str = "1080p",
         subtitle_mode: str = "bilingual",
+        native_zh: bool = False,
+        correct_en: bool = False,
     ) -> PipelineResult:
         warnings: list[str] = []
 
@@ -107,13 +109,60 @@ class Pipeline:
                     warnings=warnings,
                 )
 
-        # Stage 3: Translate (skip if zh.srt exists)
+        # Stage 2.5: AI correction of English subtitles (if enabled)
+        if correct_en:
+            api_key = self.settings.api_key or os.environ.get("DEEPSEEK_API_KEY", "")
+            base_url = self.settings.api_base_url or os.environ.get(
+                "DEEPSEEK_BASE_URL", "https://api.deepseek.com"
+            )
+            if not api_key:
+                log_warn("CORRECT", "No API key — skipping EN correction")
+            else:
+                corrector = OpenAITranslator(api_key=api_key, base_url=base_url, timeout=self.settings.api_timeout)
+                chunk_size = self.settings.chunk_size
+                corrected_entries: list = []
+                total_chunks = (len(subtitle.entries) + chunk_size - 1) // chunk_size
+
+                for i in range(0, len(subtitle.entries), chunk_size):
+                    chunk = subtitle.entries[i:i + chunk_size]
+                    chunk_num = i // chunk_size + 1
+                    log_info("CORRECT", f"chunk {chunk_num}/{total_chunks} ({len(chunk)} entries)")
+                    try:
+                        fixed = corrector.correct(chunk, language="en")
+                        corrected_entries.extend(fixed)
+                    except Exception as e:
+                        log_warn("CORRECT", f"chunk {chunk_num} failed: {e}, using original")
+                        corrected_entries.extend(chunk)
+
+                subtitle = Subtitle(entries=corrected_entries, language="en")
+                subtitle.normalize_timing()
+                subtitle.to_srt(en_srt_path)
+                log_info("CORRECT", f"EN correction complete, saved: {en_srt_path}")
+
+        # Stage 2.6: Try native Chinese subtitles (if enabled)
         zh_srt_path = workdir / "zh.srt"
         zh_subtitle: Subtitle | None = None
+        if native_zh and not zh_srt_path.exists():
+            log_info("SUBTITLE", "Trying native Chinese subtitles...")
+            zh_native = YtDlpSubtitle(language="zh")
+            try:
+                zh_subtitle = zh_native.extract(video)
+            except SubtitleDownloadError as e:
+                log_warn("SUBTITLE", f"Native zh subtitle download failed: {e}")
+
+            if zh_subtitle is not None:
+                zh_subtitle.normalize_timing()
+                zh_subtitle.to_srt(zh_srt_path)
+                log_info("SUBTITLE", f"Native Chinese subtitles found: {len(zh_subtitle.entries)} entries")
+                warnings.append("Using native YouTube Chinese subtitles (quality may be low)")
+            else:
+                log_info("SUBTITLE", "No native Chinese subtitles available")
+
+        # Stage 3: Translate (skip if zh.srt exists)
         if zh_srt_path.exists():
             log_info("TRANSLATE", f"zh.srt exists, skipping: {zh_srt_path}")
             zh_subtitle = Subtitle.from_srt(zh_srt_path, language="zh")
-        else:
+        elif zh_subtitle is None:
             api_key = self.settings.api_key or os.environ.get("DEEPSEEK_API_KEY", "")
             base_url = self.settings.api_base_url or os.environ.get(
                 "DEEPSEEK_BASE_URL", "https://api.deepseek.com"

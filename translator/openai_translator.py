@@ -1,3 +1,4 @@
+import re
 import sys
 
 from openai import OpenAI
@@ -27,6 +28,8 @@ class OpenAITranslator(BaseTranslator):
         )
         self.model = model
 
+    # ---- translate ----
+
     def translate(
         self, entries: list[SubtitleEntry], source: str, target: str
     ) -> list[SubtitleEntry]:
@@ -46,7 +49,7 @@ class OpenAITranslator(BaseTranslator):
 
         new_translations: dict[str, str] = {}
         if texts_to_translate:
-            translated = self._call_api(texts_to_translate, source, target)
+            translated = self._batch(texts_to_translate, self._prompt_translate(source, target))
             for original, translated_text in zip(texts_to_translate, translated):
                 key = cache_key(source, target, self.model, original)
                 cache[key] = translated_text
@@ -65,56 +68,138 @@ class OpenAITranslator(BaseTranslator):
             ))
         return result
 
-    def _call_api(
-        self, texts: list[str], source: str, target: str
-    ) -> list[str]:
-        import json as _json
+    # ---- correct ----
 
-        # Build a numbered JSON input so the LLM can track each entry precisely
-        items = {str(i): text for i, text in enumerate(texts)}
-        user_input = _json.dumps(items, ensure_ascii=False)
+    def correct(
+        self, entries: list[SubtitleEntry], language: str = "en"
+    ) -> list[SubtitleEntry]:
+        if not entries:
+            return []
 
-        system_prompt = (
-            f"You are a translator. Translate each text from {source} to {target}. "
-            f"Input is a JSON object mapping numeric IDs to text. "
-            f"Output a JSON object with the SAME numeric IDs mapped to translations. "
-            f"Preserve all IDs exactly. Output ONLY valid JSON, no markdown, no explanations."
-        )
+        texts = [e.text for e in entries]
+        corrected_texts = self._batch(texts, self._prompt_correct(language))
+
+        result = []
+        for e, corrected_text in zip(entries, corrected_texts):
+            result.append(SubtitleEntry(
+                index=e.index,
+                start_ms=e.start_ms,
+                end_ms=e.end_ms,
+                text=corrected_text,
+            ))
+        return result
+
+    # ---- batch engine (numbered format + single-item fallback) ----
+
+    def _batch(self, texts: list[str], prompt: tuple[str, str]) -> list[str]:
+        """Batch translate/correct using numbered format. Falls back to single-item."""
+        n = len(texts)
+        if n == 1:
+            return [self._single_item(texts[0], prompt)]
+
+        system_prompt, task_hint = prompt
+        try:
+            return self._call_numbered(texts, system_prompt, task_hint)
+        except Exception as e:
+            print(f"  Batch failed: {e}", file=sys.stderr)
+            print(f"  Falling back to single-item ({n} calls)...", file=sys.stderr)
+            return [self._single_item(t, prompt) for t in texts]
+
+    def _single_item(self, text: str, prompt: tuple[str, str]) -> str:
+        """Translate or correct a single item — most reliable."""
+        system_prompt, _task_hint = prompt
 
         def do_request():
-            print(f"  Sending request ({len(texts)} texts, ~{len(user_input)} chars)...", file=sys.stderr)
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_input},
+                    {"role": "user", "content": text},
                 ],
                 temperature=0.3,
                 extra_body={"thinking": {"type": "disabled"}},
             )
-            print(f"  Response received.", file=sys.stderr)
-            content = response.choices[0].message.content or ""
-            # Strip markdown code fences if present
-            content = content.strip()
-            if content.startswith("```"):
-                content = content.split("\n", 1)[-1]
-                if content.endswith("```"):
-                    content = content[:-3].strip()
+            result = (response.choices[0].message.content or "").strip()
+            if not result:
+                raise RuntimeError("Empty response")
+            return result
 
-            try:
-                result = _json.loads(content)
-            except _json.JSONDecodeError:
-                raise RuntimeError(f"Failed to parse translation response as JSON: {content[:200]}")
+        return retry_with_backoff(do_request, max_retries=2)
 
-            # Reconstruct in original order
-            translated = []
-            for i in range(len(texts)):
-                key = str(i)
-                if key not in result:
-                    raise RuntimeError(
-                        f"Missing translation for ID {key}. Got keys: {list(result.keys())[:10]}"
-                    )
-                translated.append(result[key])
-            return translated
+    def _call_numbered(
+        self, texts: list[str], system_prompt: str, task_hint: str
+    ) -> list[str]:
+        """Use numbered format: [1] text → [1] result. Model handles this naturally."""
+        n = len(texts)
+        numbered_input = "\n".join(f"[{i + 1}] {t}" for i, t in enumerate(texts))
 
-        return retry_with_backoff(do_request, max_retries=3)
+        user_prompt = (
+            f"{numbered_input}\n\n"
+            f"{task_hint}\n"
+            f"There are exactly {n} items above. Output exactly {n} lines "
+            f"with numbers [1] through [{n}]."
+        )
+
+        def do_request():
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.3,
+                extra_body={"thinking": {"type": "disabled"}},
+            )
+            raw = response.choices[0].message.content or ""
+            finish = response.choices[0].finish_reason
+            if finish == "length":
+                raise RuntimeError("Response truncated by token limit")
+
+            # Parse numbered output
+            parsed = {}
+            for line in raw.strip().split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                m = re.match(r"^\[(\d+)\]\s*(.+)$", line)
+                if m:
+                    parsed[int(m.group(1))] = m.group(2).strip()
+
+            # Validate
+            missing = [i for i in range(1, n + 1) if i not in parsed]
+            if missing:
+                raise RuntimeError(f"Missing: {missing}. Got {len(parsed)}/{n}")
+
+            return [parsed[i] for i in range(1, n + 1)]
+
+        return retry_with_backoff(do_request, max_retries=2)
+
+    # ---- prompts ----
+
+    def _prompt_translate(self, source: str, target: str) -> tuple[str, str]:
+        system = (
+            f"You are a professional subtitle translator. "
+            f"Translate each line from {source} to {target}. "
+            f"Keep translations concise and natural — subtitle style."
+        )
+        task = (
+            f"Translate the {source} lines above to {target}. "
+            f"Keep the same format: [1] translation, [2] translation, ..."
+        )
+        return (system, task)
+
+    def _prompt_correct(self, language: str) -> tuple[str, str]:
+        system = (
+            "You are a subtitle transcription corrector. "
+            "Auto-generated subtitles often have errors: "
+            "misrecognized proper nouns (e.g., 'cloud code' → 'Claude Code'), "
+            "homophones (their/there), missing punctuation. "
+            "Fix only clear errors using context. "
+            "If the text is correct, return it unchanged. "
+            "Keep the same length — this is subtitle text."
+        )
+        task = (
+            "Review and correct each line above for transcription errors. "
+            "Keep the same format: [1] corrected, [2] corrected, ..."
+        )
+        return (system, task)
