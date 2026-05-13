@@ -40,6 +40,11 @@ def main():
         "--debug", action="store_true",
         help="Enable verbose API diagnostic logging",
     )
+    parser.add_argument(
+        "--translate-mode", default="batch",
+        choices=["batch", "whole"],
+        help="Translation mode: batch (JSON chunks) or whole (single SRT request)",
+    )
 
     args = parser.parse_args()
 
@@ -58,6 +63,7 @@ def main():
         correct_en=args.correct_en,
         no_cache=args.no_cache,
         debug=args.debug,
+        translate_mode=args.translate_mode,
     )
 
     if result.success:

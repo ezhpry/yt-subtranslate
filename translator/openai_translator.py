@@ -90,6 +90,81 @@ class OpenAITranslator(BaseTranslator):
             for e, t in zip(entries, corrected)
         ]
 
+    # ---- whole-file SRT translation ----
+
+    def translate_srt(
+        self, srt_content: str, source: str = "en", target: str = "zh"
+    ) -> str:
+        """Translate an entire SRT file in one request. Returns bilingual SRT.
+
+        No JSON, no batching — the model handles SRT format natively.
+        Falls back to empty string if the file is too large.
+        """
+        # Rough check: if it's huge, the model can't handle it
+        if len(srt_content) > 60000:
+            raise RuntimeError(f"SRT too large ({len(srt_content)} chars) for whole-file translation")
+
+        system_prompt = (
+            f"You are a professional subtitle translator. "
+            f"Translate each subtitle from {source} to {target}.\n"
+            f"Input is an SRT file. Output a bilingual SRT file:\n"
+            f"- Keep ALL original timestamps and indices exactly unchanged.\n"
+            f"- For each subtitle text field: put {target} translation on the first line, "
+            f"original {source} on the second line.\n"
+            f"- Be precise with timestamps. Do not modify them.\n"
+            f"- Do not skip any subtitle entry.\n"
+            f"Output the complete SRT file. No explanations, no markdown."
+        )
+
+        user_prompt = (
+            f"{srt_content}\n\n"
+            f"Translate this entire SRT file. "
+            f"Keep all timestamps. Output Chinese above, English below for each entry."
+        )
+
+        last_error = None
+        for attempt, temp in enumerate(RETRY_TEMPS):
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    temperature=temp,
+                    max_tokens=16384,
+                    extra_body={"thinking": {"type": "disabled"}},
+                )
+                content = response.choices[0].message.content or ""
+                finish = response.choices[0].finish_reason
+
+                if self.debug:
+                    usage = response.usage
+                    print(f"  [DEBUG] whole-srt temp={temp} finish={finish} "
+                          f"tokens(in={usage.prompt_tokens}, out={usage.completion_tokens}) "
+                          f"resp={len(content)} chars", file=sys.stderr)
+
+                if not content:
+                    raise RuntimeError("Empty response")
+                if finish == "length":
+                    raise RuntimeError("SRT too long — response truncated")
+
+                # Basic validation: must contain SRT timestamps
+                if "-->" not in content:
+                    raise RuntimeError("Output does not contain SRT timestamps")
+
+                return content
+
+            except Exception as e:
+                last_error = e
+                if attempt < MAX_RETRIES:
+                    delay = 2 ** attempt
+                    print(f"  Whole-SRT retry {attempt + 1}/{MAX_RETRIES} "
+                          f"in {delay}s (temp={RETRY_TEMPS[attempt + 1]}): {e}", file=sys.stderr)
+                    time.sleep(delay)
+
+        raise last_error  # type: ignore[misc]
+
     # ---- core engine ----
 
     def _batch(

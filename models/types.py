@@ -27,26 +27,28 @@ class Subtitle:
 
     @classmethod
     def from_srt(cls, path: Path, language: str) -> "Subtitle":
+        with open(path, "r", encoding="utf-8") as f:
+            return cls.from_srt_content(f.read(), language)
+
+    @classmethod
+    def from_srt_content(cls, text: str, language: str) -> "Subtitle":
         from utils.time_utils import srt_timestamp_to_ms
 
         entries = []
-        with open(path, "r", encoding="utf-8") as f:
-            content = f.read().strip()
-
-        blocks = content.split("\n\n")
+        blocks = text.strip().split("\n\n")
         for block in blocks:
             lines = block.strip().split("\n")
             if len(lines) < 3:
                 continue
             index = int(lines[0])
             start_str, end_str = lines[1].split(" --> ")
-            text = "\n".join(lines[2:])
+            text_content = "\n".join(lines[2:])
 
             entries.append(SubtitleEntry(
                 index=index,
                 start_ms=srt_timestamp_to_ms(start_str.strip()),
                 end_ms=srt_timestamp_to_ms(end_str.strip()),
-                text=text,
+                text=text_content,
             ))
 
         return cls(entries=entries, language=language)

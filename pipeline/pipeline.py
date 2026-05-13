@@ -31,6 +31,7 @@ class Pipeline:
         correct_en: bool = False,
         no_cache: bool = False,
         debug: bool = False,
+        translate_mode: str = "batch",
     ) -> PipelineResult:
         warnings: list[str] = []
 
@@ -161,51 +162,72 @@ class Pipeline:
                 log_info("SUBTITLE", "No native Chinese subtitles available")
 
         # Stage 3: Translate (skip if zh.srt exists)
+        # Two modes: "whole" (single-request whole SRT) or "batch" (JSON chunks)
+        api_key = self.settings.api_key or os.environ.get("DEEPSEEK_API_KEY", "")
+        base_url = self.settings.api_base_url or os.environ.get(
+            "DEEPSEEK_BASE_URL", "https://api.deepseek.com"
+        )
+
         if zh_srt_path.exists():
             log_info("TRANSLATE", f"zh.srt exists, skipping: {zh_srt_path}")
             zh_subtitle = Subtitle.from_srt(zh_srt_path, language="zh")
         elif zh_subtitle is None:
-            api_key = self.settings.api_key or os.environ.get("DEEPSEEK_API_KEY", "")
-            base_url = self.settings.api_base_url or os.environ.get(
-                "DEEPSEEK_BASE_URL", "https://api.deepseek.com"
-            )
-
             if not api_key:
                 log_warn("TRANSLATE", "No API key — skipping translation")
-            else:
+            elif translate_mode == "whole":
+                # Whole-file SRT translation — single request, bilingual output
                 translator = OpenAITranslator(
-                    api_key=api_key,
-                    base_url=base_url,
-                    timeout=self.settings.api_timeout,
-                    debug=debug,
+                    api_key=api_key, base_url=base_url,
+                    timeout=self.settings.api_timeout, debug=debug,
                 )
-                chunk_size = self.settings.chunk_size
-                translated_entries: list = []
-                total_chunks = (len(subtitle.entries) + chunk_size - 1) // chunk_size
+                en_srt_text = en_srt_path.read_text(encoding="utf-8")
+                log_info("TRANSLATE", f"Whole-file translation ({len(en_srt_text)} chars)...")
+                try:
+                    bilingual_srt = translator.translate_srt(en_srt_text)
+                    zh_subtitle = Subtitle.from_srt_content(bilingual_srt, language="bilingual")
+                    zh_subtitle.normalize_timing()
+                    zh_subtitle.to_srt(zh_srt_path)
+                    log_info("TRANSLATE", f"Whole-file complete: {len(zh_subtitle.entries)} entries")
+                except Exception as e:
+                    log_error("TRANSLATE", f"Whole-file failed: {e}. Falling back to batch.")
+                    translate_mode = "batch"  # fall through to batch below
 
-                for i in range(0, len(subtitle.entries), chunk_size):
-                    chunk = subtitle.entries[i:i + chunk_size]
-                    chunk_num = i // chunk_size + 1
-                    log_info("TRANSLATE", f"chunk {chunk_num}/{total_chunks} ({len(chunk)} entries)")
-                    try:
-                        translated = translator.translate(chunk, source="en", target="zh", use_cache=not no_cache)
-                        translated_entries.extend(translated)
-                    except Exception as e:
-                        log_error("TRANSLATE", f"chunk {chunk_num} failed: {e}")
-                        warnings.append(f"Translation chunk {chunk_num} failed, using original")
-                        translated_entries.extend(chunk)
+        if zh_subtitle is None and translate_mode != "whole" and api_key:
+            translator = OpenAITranslator(
+                api_key=api_key, base_url=base_url,
+                timeout=self.settings.api_timeout, debug=debug,
+            )
+            chunk_size = self.settings.chunk_size
+            translated_entries: list = []
+            total_chunks = (len(subtitle.entries) + chunk_size - 1) // chunk_size
 
-                zh_subtitle = Subtitle(entries=translated_entries, language="zh")
-                zh_subtitle.normalize_timing()
-                zh_subtitle.to_srt(zh_srt_path)
-                log_info("TRANSLATE", f"saved: {zh_srt_path}")
+            for i in range(0, len(subtitle.entries), chunk_size):
+                chunk = subtitle.entries[i:i + chunk_size]
+                chunk_num = i // chunk_size + 1
+                log_info("TRANSLATE", f"chunk {chunk_num}/{total_chunks} ({len(chunk)} entries)")
+                try:
+                    translated = translator.translate(chunk, source="en", target="zh", use_cache=not no_cache)
+                    translated_entries.extend(translated)
+                except Exception as e:
+                    log_error("TRANSLATE", f"chunk {chunk_num} failed: {e}")
+                    warnings.append(f"Translation chunk {chunk_num} failed, using original")
+                    translated_entries.extend(chunk)
+
+            zh_subtitle = Subtitle(entries=translated_entries, language="zh")
+            zh_subtitle.normalize_timing()
+            zh_subtitle.to_srt(zh_srt_path)
+            log_info("TRANSLATE", f"saved: {zh_srt_path}")
 
         # Stage 4: Compose (skip if outputs exist)
         burned_path = workdir / "output_burned.mp4"
         soft_path = workdir / "output_zh.srt"
 
         # Determine which subtitle to burn
-        if zh_subtitle is not None and subtitle_mode == "bilingual":
+        # Whole-file mode already produces bilingual SRT
+        if zh_subtitle is not None and zh_subtitle.language == "bilingual":
+            burn_sub = zh_subtitle
+            burn_sub.normalize_timing()
+        elif zh_subtitle is not None and subtitle_mode == "bilingual":
             burn_sub = subtitle.merge_bilingual(zh_subtitle)
             burn_sub.normalize_timing()
             log_info("COMPOSE", "Bilingual subtitle mode: en + zh")
