@@ -9,7 +9,6 @@
 
 # Local data (not tracked)
 tests/
-docs/
 .cache/
 output/
 demo/.cache/
@@ -20,3 +19,7 @@ demo/output/
 .claude/
 .pytest_cache/
 .vscode/
+
+# AI prompt,design and plan
+CLAUDE.md
+docs/
